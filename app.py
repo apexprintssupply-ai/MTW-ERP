@@ -3,12 +3,18 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, jsonify
+from werkzeug.middleware.proxy_fix import ProxyFix
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
 app=Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 app.config['SECRET_KEY']=os.getenv('SECRET_KEY','change-this-in-production')
+app.config['SESSION_COOKIE_HTTPONLY']=True
+app.config['SESSION_COOKIE_SAMESITE']='Lax'
+app.config['SESSION_COOKIE_SECURE']=os.getenv('SESSION_COOKIE_SECURE','').lower() in {'1','true','yes','on'} or bool(os.getenv('RAILWAY_ENVIRONMENT'))
+app.config['PERMANENT_SESSION_LIFETIME']=timedelta(days=7)
 db_url=os.getenv('DATABASE_URL','sqlite:///mtw_erp.db')
 if db_url.startswith('postgres://'): db_url=db_url.replace('postgres://','postgresql://',1)
 app.config['SQLALCHEMY_DATABASE_URI']=db_url
@@ -61,6 +67,42 @@ def calculate_paye(gross):
 
 def company(): return Company.query.first()
 def money(x): return Decimal(str(x or 0))
+def ensure_database_ready(attempts=10, delay=2):
+    import time
+    last_error = None
+    for _ in range(attempts):
+        try:
+            db.session.execute(db.text('SELECT 1'))
+            return True
+        except Exception as e:
+            last_error = e
+            db.session.rollback()
+            time.sleep(delay)
+    raise last_error
+
+def initialize_database():
+    ensure_database_ready()
+    db.create_all()
+    migrate_schema()
+    accounts_password = os.getenv('ACCOUNTS_PASSWORD')
+    user = User.query.filter_by(username='accounts').first()
+    if not user:
+        password = accounts_password or 'ChangeMe123!'
+        db.session.add(User(username='accounts', password_hash=generate_password_hash(password), role='Accounts Officer'))
+    elif accounts_password:
+        # Railway environment variable is the source of truth for the built-in Accounts login.
+        # This fixes the common case where the database already contains an older password hash.
+        if not check_password_hash(user.password_hash, accounts_password):
+            user.password_hash = generate_password_hash(accounts_password)
+    if not Company.query.first():
+        db.session.add(Company(name='MTW',address=''))
+    if not StatutorySetting.query.first():
+        db.session.add(StatutorySetting(nssf_employee_rate=0,nssf_employer_rate=0,sdl_rate=0,wcf_rate=0,paye_enabled=True,effective_from=date.today()))
+    if not ExpenseCategory.query.first():
+        for cat in DEFAULT_CATS:
+            db.session.add(ExpenseCategory(name=cat))
+    db.session.commit()
+
 def login_required(f):
     @wraps(f)
     def w(*a,**kw):
@@ -82,7 +124,10 @@ def login():
     if request.method=='POST':
         u=User.query.filter_by(username=request.form.get('username','').strip()).first()
         if u and check_password_hash(u.password_hash,request.form.get('password','')):
-            session.update(user_id=u.id,username=u.username,role=u.role); return redirect(url_for('dashboard'))
+            session.clear()
+            session.permanent = True
+            session.update(user_id=u.id,username=u.username,role=u.role)
+            return redirect(url_for('dashboard'))
         flash('Username au password si sahihi.','danger')
     return render_template('login.html')
 @app.route('/logout')
@@ -309,14 +354,6 @@ def migrate_schema():
     db.session.commit()
 
 with app.app_context():
-    db.create_all()
-    migrate_schema()
-    if not User.query.filter_by(username='accounts').first():
-        db.session.add(User(username='accounts',password_hash=generate_password_hash(os.getenv('ACCOUNTS_PASSWORD','ChangeMe123!')),role='Accounts Officer'))
-    if not Company.query.first(): db.session.add(Company(name='MTW',address=''))
-    if not StatutorySetting.query.first(): db.session.add(StatutorySetting(nssf_employee_rate=0,nssf_employer_rate=0,sdl_rate=0,wcf_rate=0,paye_enabled=True,effective_from=date.today()))
-    if not ExpenseCategory.query.first():
-        for cat in DEFAULT_CATS: db.session.add(ExpenseCategory(name=cat))
-    db.session.commit()
+    initialize_database()
 
 if __name__=='__main__': app.run(host='0.0.0.0',port=int(os.getenv('PORT',5000)),debug=False)
