@@ -1,28 +1,29 @@
-# MTW ERP v2 — Projects, Accounts, Payroll & Invoicing
+# MTW Finance ERP V4
 
-This version expands the original Accounts Officer app into a project-based ERP for Metal & Timber Works.
+**B & I Metal and Timber Works Co. Ltd**
 
-## Included
-- Login with Railway/PostgreSQL support
-- Dashboard with day/week/month/year income, expenses and net
-- Projects / Job Cards
-- Multiple fundi/staff per project, each with job, agreed amount, paid amount and balance
-- Project materials requested/used, quantities, suppliers, paid and balance
-- Fundi/staff loans and advances with outstanding balances
-- Payroll with gross, loan deductions, other deductions, net, paid and balance
-- Office and project operating expenses in one transaction ledger
-- Income and expense reports by period and category
-- Project expense reporting
-- Invoice creation with multiple line items, tax rate, company details and PDF download
-- Company settings: logo, address, phone, email, TIN, VRN, invoice prefix
-- Railway-ready Docker deployment
+V4 is based on the uploaded V3 Flask application and adds:
+- Daily, weekly, monthly and annual financial reports.
+- Custom From/To date reporting.
+- Report PDF download.
+- Report CSV download.
+- Dedicated print-ready report view.
+- Invoice PDF download and browser print.
+- Configurable company logo and stamp/mhuri upload.
+- Company name defaults to B & I Metal and Timber Works Co. Ltd.
+- Initial finance login.
 
-## Railway variables
-Set `SECRET_KEY`, `ACCOUNTS_PASSWORD`, and use the PostgreSQL `DATABASE_URL` supplied by Railway.
-
-## Login
+## Initial login
 Username: `accounts`
-Password: value of `ACCOUNTS_PASSWORD`.
+Password: `ChangeMe123!`
 
-## Important
-For production, use a strong secret/password and enable HTTPS through Railway.
+**Change the password before production use.** The password can be controlled with `ACCOUNTS_PASSWORD` when creating the first user on a fresh database.
+
+## Run
+1. Install Python 3.11+.
+2. `pip install -r requirements.txt`
+3. Set environment variables from `.env.example`.
+4. Run `python app.py` or use Gunicorn in production.
+5. Open `/login`.
+
+The application uses SQLite by default for testing and can use PostgreSQL through `DATABASE_URL`.

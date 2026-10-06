@@ -21,7 +21,7 @@ class User(db.Model):
     id=db.Column(db.Integer,primary_key=True); username=db.Column(db.String(80),unique=True,nullable=False)
     password_hash=db.Column(db.String(255),nullable=False); role=db.Column(db.String(40),default='Accounts Officer')
 class Company(db.Model):
-    id=db.Column(db.Integer,primary_key=True); name=db.Column(db.String(160),default='MTW'); address=db.Column(db.String(255)); phone=db.Column(db.String(80)); email=db.Column(db.String(120)); tin=db.Column(db.String(80)); vrn=db.Column(db.String(80)); logo=db.Column(db.String(255)); invoice_prefix=db.Column(db.String(20),default='INV')
+    id=db.Column(db.Integer,primary_key=True); name=db.Column(db.String(160),default='B & I Metal and Timber Works Co. Ltd'); address=db.Column(db.String(255)); phone=db.Column(db.String(80)); email=db.Column(db.String(120)); tin=db.Column(db.String(80)); vrn=db.Column(db.String(80)); logo=db.Column(db.String(255)); stamp=db.Column(db.String(255)); invoice_prefix=db.Column(db.String(20),default='INV')
 class Project(db.Model):
     id=db.Column(db.Integer,primary_key=True); code=db.Column(db.String(40),unique=True,nullable=False); name=db.Column(db.String(160),nullable=False); client=db.Column(db.String(160)); location=db.Column(db.String(160)); start_date=db.Column(db.Date,default=date.today); end_date=db.Column(db.Date); status=db.Column(db.String(30),default='Active'); contract_amount=db.Column(db.Numeric(14,2),default=0); notes=db.Column(db.Text)
     workers=db.relationship('ProjectWorker',backref='project',cascade='all, delete-orphan'); materials=db.relationship('Material',backref='project',cascade='all, delete-orphan'); invoices=db.relationship('Invoice',backref='project')
@@ -190,7 +190,7 @@ def invoices(): return render_template('invoices.html',invoices=Invoice.query.or
 @app.route('/invoices/new',methods=['GET','POST'])
 def invoice_new():
     if request.method=='POST':
-        c=company() or Company(name='MTW');
+        c=company() or Company(name='B & I Metal and Timber Works Co. Ltd');
         if not c.id: db.session.add(c); db.session.flush()
         num=f"{c.invoice_prefix or 'INV'}-{date.today().strftime('%Y%m%d')}-{Invoice.query.count()+1:04d}"
         inv=Invoice(number=num,project_id=int(request.form['project_id']) if request.form.get('project_id') else None,customer=request.form['customer'],issue_date=datetime.strptime(request.form['issue_date'],'%Y-%m-%d').date(),due_date=datetime.strptime(request.form['due_date'],'%Y-%m-%d').date() if request.form.get('due_date') else None,tax_rate=Decimal(request.form.get('tax_rate') or 0),notes=request.form.get('notes'))
@@ -222,24 +222,74 @@ def invoice_download(iid):
         pdf.drawString(20*mm,y,it.description[:55]); pdf.drawRightString(w-85*mm,y,f'{it.quantity:g}'); pdf.drawRightString(w-55*mm,y,f'{money(it.rate):,.2f}'); pdf.drawRightString(w-20*mm,y,f'{money(it.amount):,.2f}'); y-=6*mm
     y-=5*mm; pdf.drawRightString(w-20*mm,y,f'Subtotal: {sub:,.2f}'); y-=6*mm; pdf.drawRightString(w-20*mm,y,f'Tax: {tax:,.2f}'); y-=6*mm; pdf.setFont('Helvetica-Bold',10); pdf.drawRightString(w-20*mm,y,f'TOTAL TZS: {total:,.2f}'); pdf.save(); buf.seek(0); return send_file(buf,mimetype='application/pdf',as_attachment=True,download_name=f'{inv.number}.pdf')
 
+def report_range():
+    p=request.args.get('period','month')
+    s,e=period_dates(p)
+    if request.args.get('start'):
+        s=datetime.strptime(request.args['start'],'%Y-%m-%d').date()
+    if request.args.get('end'):
+        e=datetime.strptime(request.args['end'],'%Y-%m-%d').date()
+    return p,s,e
+
+def report_data(s,e):
+    inc,exp=totals(s,e)
+    bycat=db.session.query(Transaction.txn_type,Transaction.category,db.func.sum(Transaction.amount)).filter(Transaction.txn_date.between(s,e)).group_by(Transaction.txn_type,Transaction.category).order_by(Transaction.txn_type,Transaction.category).all()
+    byproj=db.session.query(Project.name,db.func.coalesce(db.func.sum(Transaction.amount),0)).join(Transaction,Transaction.project_id==Project.id).filter(Transaction.txn_date.between(s,e),Transaction.txn_type=='Expense').group_by(Project.name).order_by(Project.name).all()
+    rows=Transaction.query.filter(Transaction.txn_date.between(s,e)).order_by(Transaction.txn_date,Transaction.id).all()
+    return inc,exp,bycat,byproj,rows
+
 @app.route('/reports')
 def reports():
-    p=request.args.get('period','month'); s,e=period_dates(p); inc,exp=totals(s,e); bycat=db.session.query(Transaction.txn_type,Transaction.category,db.func.sum(Transaction.amount)).filter(Transaction.txn_date.between(s,e)).group_by(Transaction.txn_type,Transaction.category).order_by(Transaction.txn_type).all(); byproj=db.session.query(Project.name,db.func.coalesce(db.func.sum(Transaction.amount),0)).join(Transaction,Transaction.project_id==Project.id).filter(Transaction.txn_date.between(s,e),Transaction.txn_type=='Expense').group_by(Project.name).all(); return render_template('reports.html',period=p,start=s,end=e,income=inc,expense=exp,balance=inc-exp,bycat=bycat,byproj=byproj)
+    p,s,e=report_range(); inc,exp,bycat,byproj,rows=report_data(s,e)
+    return render_template('reports.html',period=p,start=s,end=e,income=inc,expense=exp,balance=inc-exp,bycat=bycat,byproj=byproj,rows=rows)
+
+@app.route('/reports/pdf')
+def report_pdf():
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.units import mm
+    p,s,e=report_range(); inc,exp,bycat,byproj,rows=report_data(s,e); c=company()
+    buf=io.BytesIO(); pdf=canvas.Canvas(buf,pagesize=A4); w,h=A4; y=h-18*mm
+    pdf.setFont('Helvetica-Bold',15); pdf.drawString(18*mm,y,c.name if c else 'B & I Metal and Timber Works Co. Ltd'); y-=7*mm
+    pdf.setFont('Helvetica-Bold',12); pdf.drawString(18*mm,y,'FINANCIAL REPORT'); y-=6*mm
+    pdf.setFont('Helvetica',9); pdf.drawString(18*mm,y,f'Period: {s} to {e}'); y-=8*mm
+    pdf.drawString(18*mm,y,f'Income: TZS {inc:,.2f}'); pdf.drawString(85*mm,y,f'Expenses: TZS {exp:,.2f}'); pdf.drawString(150*mm,y,f'Net: TZS {(inc-exp):,.2f}'); y-=9*mm
+    pdf.setFont('Helvetica-Bold',10); pdf.drawString(18*mm,y,'Transactions'); y-=6*mm; pdf.setFont('Helvetica',8)
+    for t in rows:
+        if y<18*mm: pdf.showPage(); y=h-18*mm; pdf.setFont('Helvetica',8)
+        desc=(t.description or '')[:42]
+        pdf.drawString(18*mm,y,str(t.txn_date)); pdf.drawString(42*mm,y,(t.txn_type or '')[:8]); pdf.drawString(62*mm,y,(t.category or '')[:20]); pdf.drawString(102*mm,y,desc); pdf.drawRightString(192*mm,y,f'{money(t.amount):,.2f}'); y-=5*mm
+    if y<35*mm: pdf.showPage(); y=h-18*mm
+    y-=3*mm; pdf.setFont('Helvetica-Bold',10); pdf.drawString(18*mm,y,'Project Expenses'); y-=6*mm; pdf.setFont('Helvetica',8)
+    for name,total in byproj:
+        if y<18*mm: pdf.showPage(); y=h-18*mm; pdf.setFont('Helvetica',8)
+        pdf.drawString(18*mm,y,str(name)[:55]); pdf.drawRightString(192*mm,y,f'{money(total):,.2f}'); y-=5*mm
+    pdf.save(); buf.seek(0); return send_file(buf,mimetype='application/pdf',as_attachment=True,download_name=f'finance_report_{s}_{e}.pdf')
+
+@app.route('/reports/print')
+def report_print():
+    p,s,e=report_range(); inc,exp,bycat,byproj,rows=report_data(s,e)
+    return render_template('report_print.html',period=p,start=s,end=e,income=inc,expense=exp,balance=inc-exp,bycat=bycat,byproj=byproj,rows=rows)
+
 @app.route('/export.csv')
 def export_csv():
+    p,s,e=report_range(); _,_,_,_,rows=report_data(s,e)
     out=io.StringIO(); w=csv.writer(out); w.writerow(['Date','Type','Category','Description','Amount','Payment Method','Reference','Project'])
-    for t in Transaction.query.order_by(Transaction.txn_date).all(): w.writerow([t.txn_date,t.txn_type,t.category,t.description,t.amount,t.payment_method,t.reference,t.project.name if t.project else ''])
-    return send_file(io.BytesIO(out.getvalue().encode('utf-8-sig')),mimetype='text/csv',as_attachment=True,download_name='mtw_transactions.csv')
+    for t in rows: w.writerow([t.txn_date,t.txn_type,t.category,t.description,t.amount,t.payment_method,t.reference,t.project.name if t.project else ''])
+    return send_file(io.BytesIO(out.getvalue().encode('utf-8-sig')),mimetype='text/csv',as_attachment=True,download_name=f'mtw_transactions_{s}_{e}.csv')
 
 @app.route('/settings',methods=['GET','POST'])
 def settings():
     c=company()
-    if not c: c=Company(name='MTW'); db.session.add(c); db.session.commit()
+    if not c: c=Company(name='B & I Metal and Timber Works Co. Ltd'); db.session.add(c); db.session.commit()
     if request.method=='POST':
         c.name=request.form['name']; c.address=request.form.get('address'); c.phone=request.form.get('phone'); c.email=request.form.get('email'); c.tin=request.form.get('tin'); c.vrn=request.form.get('vrn'); c.invoice_prefix=request.form.get('invoice_prefix','INV')
         f=request.files.get('logo')
         if f and f.filename:
             ext=os.path.splitext(secure_filename(f.filename))[1].lower(); name=f'logo_{uuid.uuid4().hex}{ext}'; f.save(os.path.join(UPLOAD_DIR,name)); c.logo=name
+        st=request.files.get('stamp')
+        if st and st.filename:
+            ext=os.path.splitext(secure_filename(st.filename))[1].lower(); name=f'stamp_{uuid.uuid4().hex}{ext}'; st.save(os.path.join(UPLOAD_DIR,name)); c.stamp=name
         db.session.commit(); flash('Company settings zimehifadhiwa.','success'); return redirect(url_for('settings'))
     return render_template('settings.html',c=c)
 
