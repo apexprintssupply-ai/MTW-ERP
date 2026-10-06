@@ -262,7 +262,7 @@ with app.app_context():
     db.create_all()
     migrate_schema()
     if not User.query.filter_by(username='accounts').first():
-        db.session.add(User(username='accounts',password_hash=generate_password_hash(os.getenv('ACCOUNTS_PASSWORD','accounts123)),role='Accounts Officer'))
+        db.session.add(User(username='accounts',password_hash=generate_password_hash(os.getenv('ACCOUNTS_PASSWORD','ChangeMe123!')),role='Accounts Officer'))
     if not Company.query.first(): db.session.add(Company(name='MTW',address=''))
     if not StatutorySetting.query.first(): db.session.add(StatutorySetting(nssf_employee_rate=0,nssf_employer_rate=0,sdl_rate=0,wcf_rate=0,paye_enabled=True,effective_from=date.today()))
     if not ExpenseCategory.query.first():
